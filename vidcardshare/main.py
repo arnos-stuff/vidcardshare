@@ -4,6 +4,7 @@ import typer_tinydb as ttdb
 import shutil
 
 from pathlib import Path
+from flask import send_from_directory, Flask, make_response, render_template
 from pytube import YouTube
 
 Pkg = Path(__file__).parent
@@ -40,6 +41,9 @@ DEFAULTS = [
     '#'
 ]
 
+DEFAULT_BUILD_DIR = Path().home() / '.vidcardshare'
+DEFAULT_BUILD_PATH = DEFAULT_BUILD_DIR / 'video-website'
+DEFAULT_BUILD_PATH.mkdir(parents=True, exist_ok=True)
 
 def attemptGetVarsDB(*vars, **kwargs):
     """Checks the variables have been declared"""
@@ -100,7 +104,7 @@ def build(
             help="Just your twitter handle, without the @ (ex: @joe => joe)"
         ),
         out_path: Path = typer.Option(
-            "./video-website.zip",
+            DEFAULT_BUILD_PATH,
             '-o', '--out-dir',
             help="Where to output the zipped website"
         ),
@@ -108,9 +112,14 @@ def build(
             1080,
             '-yq', '--youtube-quality',
             help="If your link is a youtube link, what quality to download it in."
-        )
+        ),
+        keep_archive_only: bool = typer.Option(
+            False,
+            '-k', '--keep-archive-only', help="Whether to remove everything but the archive after build."
+        )            
     ):
-    variables = attemptGetVarsDB(*VARIABLES, video_url=video_url, github_repo=github_repo, twitter_handle=twitter_handle)
+
+    variables = attemptGetVarsDB(*VARIABLES, background_image_url=background_image_url, profile_picture_url=profile_picture_url, video_url=video_url, github_repo=github_repo, twitter_handle=twitter_handle)
     missing, message = promptVarsMissing(**variables)
     
     video = variables['video_url']
@@ -146,7 +155,8 @@ def build(
         htmlTpl = jj.Template(htmlTemplateFile.read_text()).render(variables)
         base = out_path.parent
         archive = out_path.stem
-        root = out_path.parent / out_path.stem
+        root = out_path.parent / out_path.stem if out_path.suffix else out_path
+        fmt = out_path.suffix.replace('.','') or 'zip'
         root.mkdir(exist_ok=True)
         (root / 'index.html').write_text(htmlTpl)
         (root / 'style.css').write_text(cssTpl)
@@ -154,8 +164,30 @@ def build(
         for item in [bg, pic, video]:
             if (pitm := Path(item)).is_file():
                 shutil.copyfile(pitm, root / pitm.name)
-        shutil.make_archive(base_dir=base,base_name=archive, root_dir=root, format=out_path.suffix.replace('.',''))
+        shutil.make_archive(base_dir=base,base_name=archive, root_dir=root, format=fmt)
         ttdb.console.print(f"✅[green] Built archive at {root}")
-        shutil.rmtree(root)
+        if keep_archive_only:
+            shutil.rmtree(root)
         for vid in Path().cwd().glob("*.mp4"):
             vid.unlink()
+
+
+@app.command("serve", help="""Serves your site locally, if you built it. Else attempts to build first, then serve.""")
+def serve(
+        out_path: Path = typer.Option(
+            DEFAULT_BUILD_PATH,
+            '-o', '--out-dir',
+            help="Where to output the website files"
+        ),
+    ):
+    server = Flask(
+        root_path=out_path,
+        import_name=__name__,
+        static_folder="")
+    if not out_path.exists():
+        build(**dict(zip(VARIABLES, DEFAULTS)), youtube_quality=1080, out_path=out_path)
+    
+    @server.route('/<path:path>')
+    def send_report(path):
+        return send_from_directory(out_path, 'index.html')
+    server.run(host='localhost', port=5000, debug=True)
